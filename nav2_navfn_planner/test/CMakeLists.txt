@@ -17,3 +17,11 @@ nav2_add_gtest(test_max_cycles
 target_link_libraries(test_max_cycles
   ${library_name}
 )
+
+# Test NavFn path extraction on a partially relaxed A* potential field
+nav2_add_gtest(test_traceback_guard
+  test_traceback_guard.cpp
+)
+target_link_libraries(test_traceback_guard
+  ${library_name}
+)

@@ -262,6 +262,17 @@ public:
   int calcPath(int n, int * st = NULL);
 
   /**
+   * @brief  Follow the potential gradient from the start cell for at most <n> cycles
+   * @param n The maximum number of cycles to run for
+   * @param st The cell to start from, NULL for the cell set with setStart()
+   * @param guard Take the grid-following step whenever the interpolated potential
+   * rises by more than one free cell above the lowest value seen, or the descent
+   * stays inside one cell for more than 6 cycles
+   * @return The length of the path found, 0 on failure, -1 when the cycle budget ran out
+   */
+  int tracePath(int n, int * st, bool guard);
+
+  /**
    * @brief  Calculate gradient at a cell
    * @param n Cell number <n>
    * @return float norm

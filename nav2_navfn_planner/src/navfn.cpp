@@ -40,6 +40,7 @@
 #include "nav2_navfn_planner/navfn.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include "nav2_core/planner_exceptions.hpp"
 #include "rclcpp/logger.hpp"
 #include "rclcpp/logging.hpp"
@@ -759,6 +760,32 @@ float NavFn::getLastPathCost()
 int
 NavFn::calcPath(int n, int * st)
 {
+  int len = tracePath(n, st, false);
+  if (len < 0) {
+    // A* stops propagating as soon as the start cell is reached and leaves
+    // cells next to the path partially relaxed. Their stale potentials can
+    // turn the interpolated gradient around and trap the plain descent until
+    // the cycle budget runs out. The guarded descent only differs from the
+    // plain one where the potential stops decreasing, so it is tried second
+    // and leaves every path the plain descent can extract unchanged.
+    RCLCPP_DEBUG(
+      rclcpp::get_logger("rclcpp"),
+      "[PathCalc] Path extraction exhausted %d cycles, retrying with the guarded descent", n);
+    len = tracePath(n, st, true);
+  }
+  if (len < 0) {
+    RCLCPP_WARN(
+      rclcpp::get_logger("rclcpp"),
+      "[PathCalc] Path extraction exhausted: npath = %d, max_cycles = %d",
+      npath, n);
+    return 0;
+  }
+  return len;
+}
+
+int
+NavFn::tracePath(int n, int * st, bool guard)
+{
   // test write
   // savemap("test");
 
@@ -780,6 +807,12 @@ NavFn::calcPath(int n, int * st)
   float dx = 0;
   float dy = 0;
   npath = 0;
+
+  // guarded descent state: lowest interpolated potential seen so far and the
+  // number of consecutive cycles spent inside the current cell
+  float best_pot = POT_HIGH;
+  int last_stc = -1;
+  int same_cell_cycles = 0;
 
   // go for <n> cycles at most
   for (int i = 0; i < n; i++) {
@@ -805,6 +838,45 @@ NavFn::calcPath(int n, int * st)
     pathy[npath] = stc / nx + dy;
     npath++;
 
+    // A correct descent never raises the interpolated potential by more than
+    // the cost of one free cell and never stays inside one cell for long.
+    // When either happens, take the grid-following step, which always moves
+    // to a strictly lower neighbour.
+    bool force_grid = false;
+    if (guard) {
+      float px = stc % nx + dx;
+      float py = stc / nx + dy;
+      int ix = static_cast<int>(std::floor(px));
+      int iy = static_cast<int>(std::floor(py));
+      if (ix >= 0 && iy >= 0 && ix < nx - 1 && iy < ny - 1) {
+        int b = iy * nx + ix;
+        if (potarr[b] < POT_HIGH && potarr[b + 1] < POT_HIGH &&
+          potarr[b + nx] < POT_HIGH && potarr[b + nx + 1] < POT_HIGH)
+        {
+          float fx = px - ix;
+          float fy = py - iy;
+          float pot_here = (1 - fx) * (1 - fy) * potarr[b] + fx * (1 - fy) * potarr[b + 1] +
+            (1 - fx) * fy * potarr[b + nx] + fx * fy * potarr[b + nx + 1];
+          if (pot_here > best_pot + COST_NEUTRAL) {
+            RCLCPP_DEBUG(
+              rclcpp::get_logger("rclcpp"),
+              "[PathCalc] potential rose from %0.1f to %0.1f, following grid", best_pot, pot_here);
+            force_grid = true;
+          } else if (pot_here < best_pot) {
+            best_pot = pot_here;
+          }
+        }
+      }
+      if (stc != last_stc) {
+        last_stc = stc;
+        same_cell_cycles = 0;
+      } else if (++same_cell_cycles > 6) {
+        RCLCPP_DEBUG(
+          rclcpp::get_logger("rclcpp"), "[PathCalc] stalled inside a cell, following grid");
+        force_grid = true;
+      }
+    }
+
     bool oscillation_detected = false;
     if (npath > 2 &&
       pathx[npath - 1] == pathx[npath - 3] &&
@@ -829,7 +901,7 @@ NavFn::calcPath(int n, int * st)
       potarr[stcpx] >= POT_HIGH ||
       potarr[stcpx + 1] >= POT_HIGH ||
       potarr[stcpx - 1] >= POT_HIGH ||
-      oscillation_detected)
+      oscillation_detected || force_grid)
     {
       RCLCPP_DEBUG(
         rclcpp::get_logger("rclcpp"),
@@ -915,13 +987,8 @@ NavFn::calcPath(int n, int * st)
     //      potarr[stc], x, y, pathx[npath-1], pathy[npath-1]);
   }
 
-  //  return npath;  // out of cycles, return failure
-  RCLCPP_WARN(
-    rclcpp::get_logger("rclcpp"),
-    "[PathCalc] Path extraction exhausted: npath = %d, max_cycles = %d",
-    npath, n);
   // savemap("navfn_pathlong");
-  return 0;  // out of cycles, return failure
+  return -1;  // out of cycles, return failure
 }
 
 
